@@ -22,7 +22,7 @@ export const firebaseConfig = {
   projectId: "gurjar-law-firm",
   storageBucket: "gurjar-law-firm.firebasestorage.app",
   messagingSenderId: "848830390632",
-  appId: "1:848830390632:web:4e741680ef6733ba5ef6dd"
+  appId: "1:848830390632:web:982b635af88b5c745ef6dd"
 };
 
 // Never connect this separate website to the original firm's backend.
