@@ -1,0 +1,29 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isPrivileged() {
+      return isAuthenticated() &&
+        firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role in ['superadmin', 'admin'] &&
+        firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.active == true;
+    }
+
+    // Gallery uploads folder
+    match /gallery/{allPaths=**} {
+      // Authenticated users can view gallery photos
+      allow read: if isAuthenticated();
+
+      // Only Admins can upload, modify, or delete gallery photos
+      allow create, update: if isPrivileged() &&
+                      request.resource.size < 10 * 1024 * 1024 &&
+                      request.resource.contentType.matches('image/.*');
+
+      allow delete: if isPrivileged();
+    }
+  }
+}

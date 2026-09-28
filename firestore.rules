@@ -1,0 +1,254 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==========================================
+    // HELPER FUNCTIONS
+    // ==========================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function userExists() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserData() {
+      return get(
+        /databases/$(database)/documents/users/$(request.auth.uid)
+      ).data;
+    }
+
+    function isSuperAdmin() {
+      return userExists() &&
+        getUserData().role == 'superadmin' &&
+        getUserData().active == true;
+    }
+
+    function isAdmin() {
+      return userExists() &&
+        getUserData().role == 'admin' &&
+        getUserData().active == true;
+    }
+
+    function isPrivileged() {
+      return isSuperAdmin() || isAdmin();
+    }
+
+    function adminMay(permission) {
+      return isAdmin() && getUserData().get('permissions', {}).get(permission, true) == true;
+    }
+
+    function isAssociate() {
+      return userExists() &&
+        getUserData().role == 'associate' &&
+        getUserData().active == true &&
+        getUserData().locked != true;
+    }
+
+    function isClient() {
+      return userExists() &&
+        getUserData().role == 'client' &&
+        getUserData().active == true &&
+        getUserData().locked != true;
+    }
+
+
+    // ==========================================
+    // USERS
+    // /users/{userId}
+    // ==========================================
+
+    match /users/{userId} {
+
+      // User can read own profile.
+      // Super Admin/Admin can read all profiles.
+      allow read: if isAuthenticated() &&
+        (
+          request.auth.uid == userId ||
+          resource.data.uid == request.auth.uid ||
+          isPrivileged()
+        );
+
+      // Super Admin can create users.
+      allow create: if isSuperAdmin();
+
+      // Admin can create users, but cannot create
+      // another Super Admin.
+      allow create: if isAdmin() &&
+        request.resource.data.role in ['associate', 'client'] &&
+        (request.resource.data.role == 'associate' ? adminMay('canAddAssociate') : adminMay('canAddClient'));
+
+      // Super Admin can update any user.
+      allow update: if isSuperAdmin();
+
+      // Admin cannot modify a Super Admin account
+      // or promote somebody to Super Admin.
+      allow update: if isAdmin() &&
+        resource.data.role != 'superadmin' &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.email == resource.data.email &&
+        request.resource.data.get('permissions', {}) == resource.data.get('permissions', {}) &&
+        (adminMay('canEditUsers') ||
+          (adminMay('canLockUsers') && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['locked', 'lockReason', 'updatedAt'])));
+
+      // Super Admin can delete users.
+      allow delete: if isSuperAdmin();
+
+      // Admin can delete users except Super Admin.
+      allow delete: if adminMay('canDeleteUsers') &&
+        resource.data.role != 'superadmin';
+    }
+
+
+    // ==========================================
+    // LOGIN IDs
+    // /loginIds/{loginId}
+    // ==========================================
+
+    match /loginIds/{loginId} {
+
+      // Needed before authentication so a custom
+      // Login ID can be resolved to Firebase email.
+      allow get: if true;
+
+      // Do not allow public listing of all Login IDs.
+      allow list: if isPrivileged();
+
+      // Only Super Admin/Admin can manage Login IDs.
+      allow create, update, delete: if isPrivileged();
+    }
+
+
+    // ==========================================
+    // CASES
+    // /cases/{caseId}
+    // ==========================================
+
+    match /cases/{caseId} {
+
+      // Super Admin/Admin can read every case.
+      allow read: if isPrivileged();
+
+      // Associate can read cases marked for associates.
+      allow read: if isAssociate() &&
+        resource.data.visibleTo is list &&
+        resource.data.visibleTo.hasAny(['associate']);
+
+      // Client: exact Auth UID assignment, with a secure legacy fallback to
+      // case numbers stored on this authenticated user's own profile.
+      allow read: if isAuthenticated() &&
+        (
+          (
+            resource.data.assignedClientUids is list &&
+            resource.data.assignedClientUids.hasAny([request.auth.uid])
+          ) ||
+          (
+            userExists() &&
+            getUserData().role == 'client' &&
+            getUserData().active == true &&
+            getUserData().locked != true &&
+            getUserData().caseNos is list &&
+            getUserData().caseNos.hasAny([resource.data.caseNo])
+          )
+        );
+
+      // Super Admin always has full case access. Admin actions must also
+      // respect the granular permissions configured in User Management.
+      allow create: if isSuperAdmin() ||
+        (isAdmin() &&
+          adminMay('canEditCases') &&
+          (
+            !request.resource.data.keys().hasAny(['assignedClientUids']) ||
+            request.resource.data.assignedClientUids.size() == 0 ||
+            adminMay('canAssignCases')
+          )
+        );
+
+      allow update: if isSuperAdmin() ||
+        (isAdmin() &&
+          adminMay('canEditCases') &&
+          (
+            !request.resource.data.diff(resource.data).affectedKeys().hasAny(['assignedClientUids', 'visibleTo']) ||
+            adminMay('canAssignCases')
+          )
+        );
+
+      allow delete: if isSuperAdmin() ||
+        (isAdmin() && adminMay('canDeleteCases'));
+    }
+
+
+    // ==========================================
+    // GALLERY
+    // /gallery/{itemId}
+    // ==========================================
+
+    match /gallery/{itemId} {
+
+      // Logged-in authorized users can view gallery.
+      allow read: if userExists() &&
+        getUserData().active == true;
+
+      function validPhoto(data) {
+        return data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+          data.imageUrl is string && data.imageUrl.size() <= 280000 &&
+          data.imageUrl.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+') &&
+          data.storageType == 'firestore' &&
+          data.order is number;
+      }
+
+      // Only the active Super Admin can manage gallery content.
+      allow create: if isSuperAdmin() && validPhoto(request.resource.data) &&
+        request.resource.data.createdBy == request.auth.uid;
+      allow update: if isSuperAdmin() &&
+        (
+          validPhoto(request.resource.data) ||
+          // Existing Storage URLs can be renamed or reordered during migration.
+          (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['imageUrl', 'storageType']) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'order', 'updatedAt']) &&
+            request.resource.data.name is string &&
+            request.resource.data.name.size() > 0 &&
+            request.resource.data.name.size() <= 120 &&
+            request.resource.data.order is number)
+        );
+      allow delete: if isSuperAdmin();
+    }
+
+
+    // ==========================================
+    // SETTINGS
+    // /settings/{settingId}
+    // ==========================================
+
+    match /settings/{settingId} {
+
+      // Logged-in authorized users can read settings.
+      allow read: if userExists() &&
+        getUserData().active == true;
+
+      // Super Admin can manage all settings. Admin writes are restricted
+      // to the same granular permissions exposed by the portal UI.
+      allow create, update, delete: if isSuperAdmin() ||
+        (isAdmin() && (
+          (settingId == 'about' && (adminMay('canEditAbout') || adminMay('canEditSettings'))) ||
+          (settingId == 'firms' && adminMay('canEditSettings')) ||
+          (settingId == 'tileSettings' && adminMay('canManageTiles')) ||
+          (settingId == 'tableSettings' && adminMay('canManageTable'))
+        ));
+    }
+
+
+    // ==========================================
+    // DEFAULT DENY
+    // ==========================================
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
