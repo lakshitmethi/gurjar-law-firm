@@ -460,12 +460,22 @@ function smoothScroll(id, event) {
   document.getElementById('loginForm').addEventListener('submit', function (event) {
     if (window.gurjarAppReady) return;
     event.preventDefault();
-    notice.textContent = 'Login is unavailable until the new Firebase project is configured and the application loads.';
+    notice.textContent = window.gurjarAppLoadError || 'The application is still loading. Check your internet connection and try again.';
     notice.classList.remove('hidden');
   });
 })();
 </script>
-<script type="module" src="js/app.js"></script>
+<script type="module">
+  import('./js/app.js').catch((error) => {
+    console.error('Application failed to load:', error);
+    window.gurjarAppLoadError = 'Application could not load. Check your internet connection, refresh, and open this site using HTTPS or localhost. If it continues, check the browser Console for the blocked file.';
+    const notice = document.getElementById('authAlert');
+    if (!document.getElementById('loginPage').classList.contains('hidden')) {
+      notice.textContent = window.gurjarAppLoadError;
+      notice.classList.remove('hidden');
+    }
+  });
+</script>
 
 </body>
 </html>
