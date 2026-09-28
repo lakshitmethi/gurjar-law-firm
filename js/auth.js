@@ -58,7 +58,7 @@ export function formatAuthErrorMessage(error) {
     case "auth/operation-not-allowed":
       return "Email/Password authentication is not enabled for this Firebase project.";
     case "auth/superadmin-not-configured":
-      return "Super Admin profile is not configured.";
+      return error.message || "Super Admin profile is not configured. See SETUP_NEW_PROJECT.md.";
     case "auth/not-authorized":
       return "Your account is not authorized.";
     case "auth/inactive":
@@ -204,7 +204,7 @@ export async function handleAuthenticatedUser(user) {
     await signOut(auth);
     console.warn(`[Auth Diagnostic] Document does not exist at ${path}`);
     if (isSuperAdminEmail) {
-      const err = new Error("Super Admin profile is not configured.");
+      const err = new Error(`Super Admin profile missing in Firebase project ${projectId}. Create Firestore document users/${uid} with role = superadmin and active = true. See SETUP_NEW_PROJECT.md.`);
       err.code = "auth/superadmin-not-configured";
       throw err;
     }
@@ -230,7 +230,7 @@ export async function handleAuthenticatedUser(user) {
   if (isSuperAdminEmail && userRole !== "superadmin") {
     await signOut(auth);
     console.warn(`[Auth Diagnostic] Role mismatch for Super Admin email (${email}): found '${userRole}', expected 'superadmin'`);
-    const err = new Error("Super Admin profile is not configured.");
+    const err = new Error(`Super Admin role mismatch in Firebase project ${projectId}: users/${uid} has role '${userRole}'. Set role = superadmin in Firestore. See SETUP_NEW_PROJECT.md.`);
     err.code = "auth/superadmin-not-configured";
     throw err;
   }
